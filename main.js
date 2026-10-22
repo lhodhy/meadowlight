@@ -1815,8 +1815,10 @@ function foxUpdate(dt, t, elapsed) {
       fox.pounceTimer = 20 + Math.random() * 20;
     }
   } else if (fox.state === "sleep") {
-    if (dist < 3) {
+    if (dist < 3 || worldDaylight >= 0.05) {
+      // wake: stand back up (undo the tucked group scale)
       fox.state = "follow";
+      g.scale.setScalar(0.9);
     } else {
       // curl up: breath on the body, tucked pose
       const rested = Math.hypot(g.position.x - FOX_SLEEP_SPOT.x, g.position.z - FOX_SLEEP_SPOT.z) < 0.35;
@@ -1832,7 +1834,6 @@ function foxUpdate(dt, t, elapsed) {
         g.position.y = groundY - 0.04;
         g.scale.setScalar(0.9 * 0.94);
         fox.body.scale.y = 0.99 + Math.sin(t * 1.1) * 0.012;
-        fox.legs.forEach((leg) => { leg.scale.setScalar(0.55); });
       }
     }
   } else if (sit) {
@@ -1873,7 +1874,6 @@ function foxUpdate(dt, t, elapsed) {
   if (fox.pouncePhase === 0) {
     // day/night state transitions
     if (fox.state !== "idle" && worldDaylight < 0.05 && dist >= 3) fox.state = "sleep";
-    if (fox.state === "sleep" && (dist < 3 || worldDaylight >= 0.05)) fox.state = "follow";
   }
 
   // movement stays on solid ground
@@ -1904,11 +1904,12 @@ function foxUpdate(dt, t, elapsed) {
     g.rotation.y = angleLerp(g.rotation.y, Math.atan2(px - g.position.x, pz - g.position.z), 1 - Math.exp(-4 * dt));
   }
 
-  // stride
+  // stride (leg scale follows the sleep tuck: tucked foxes neither stride nor stand tall)
   fox.stridePhase += speed * dt * 5.2;
   const stride = reduceMotion ? 0 : Math.sin(fox.stridePhase);
+  const legScale = fox.state === "sleep" ? 0.55 : 1;
   fox.legs.forEach((leg, i) => {
-    leg.scale.x = leg.scale.y = leg.scale.z = 1;
+    leg.scale.setScalar(legScale);
     const sgn = i < 2 ? 1 : -1;
     leg.position.x = (i % 2 === 0 ? -0.09 : 0.09);
     leg.position.z = (i < 2 ? 0.18 : -0.18);
@@ -2206,9 +2207,7 @@ function applyQualityLevel(n) {
   qualityLevel = Math.max(0, Math.min(3, n));
   const lvl = QUALITY_LEVELS[qualityLevel];
   tuftField.count = lvl.tufts;
-  renderer.setPixelRatio(lvl.pixelRatio);
-  composer.setPixelRatio(lvl.pixelRatio);
-  resize();
+  resize(); // applies the level's pixel ratio (see below) so window resizes keep it too
   pollenGeo.setDrawRange(0, lvl.pollen);
   qualityEl.classList.toggle("scaled", qualityLevel > 0);
   console.info(`meadowlight: quality level ${qualityLevel}`);
@@ -2232,9 +2231,12 @@ function resize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
   aspect = w / h;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  // pixel ratio follows the current quality step (a cap over the live devicePixelRatio),
+  // so a step-down survives resizes AND a monitor move at level 0 is still honored
+  const pr = Math.min(Math.min(devicePixelRatio || 1, 2), QUALITY_LEVELS[qualityLevel].pixelRatio);
+  renderer.setPixelRatio(pr);
   renderer.setSize(w, h, false);
-  composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  composer.setPixelRatio(pr);
   composer.setSize(w, h);
   applyCameraFrustum();
 }
