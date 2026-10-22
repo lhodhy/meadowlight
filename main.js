@@ -1568,6 +1568,226 @@ scene.add(fishFlash);
 let fishFlashT = 0;
 let fishTimer = 4;
 
+// ---------------------------------------------------------------------------
+// companion fox: Pip
+// ---------------------------------------------------------------------------
+
+const FOX_SLEEP_SPOT = { x: 4.2, z: 11.8 };
+const fox = {
+  group: null,
+  state: "follow", // follow | idle | pounce | sleep
+  velocity: new THREE.Vector3(),
+  stridePhase: 0,
+  pounceTimer: 24,
+  pouncePhase: 0, // 0 none | 1 crouch | 2 hop | 3 tail-wag
+  pounceT: 0,
+  pounceSpot: new THREE.Vector3(),
+};
+
+function addFox() {
+  const rust = new THREE.MeshStandardMaterial({ color: 0xb3623d, roughness: 0.95, metalness: 0, flatShading: true });
+  const cream = new THREE.MeshStandardMaterial({ color: 0xf2e3cf, roughness: 0.95, metalness: 0, flatShading: true });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x35281e, roughness: 0.95, metalness: 0, flatShading: true });
+  const group = new THREE.Group();
+
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.16, 0.3, 6, 12), rust);
+  body.rotation.x = Math.PI / 2;
+  body.position.y = 0.2;
+  group.add(body);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10), rust);
+  head.position.set(0, 0.3, 0.3);
+  group.add(head);
+
+  const earGeo = new THREE.ConeGeometry(0.05, 0.1, 8);
+  for (const sx of [-1, 1]) {
+    const ear = new THREE.Mesh(earGeo, dark);
+    ear.position.set(sx * 0.07, 0.44, 0.28);
+    group.add(ear);
+  }
+
+  const snout = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.1, 10), cream);
+  snout.rotation.x = Math.PI / 2;
+  snout.position.set(0, 0.27, 0.44);
+  group.add(snout);
+
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.42, 10), rust);
+  tail.rotation.x = -2.3;
+  tail.position.set(0, 0.26, -0.45);
+  group.add(tail);
+
+  const legGeo = new THREE.CapsuleGeometry(0.03, 0.14, 4, 8);
+  const legs = [];
+  for (const [lx, lz] of [[-0.09, 0.18], [0.09, 0.18], [-0.09, -0.18], [0.09, -0.18]]) {
+    const leg = new THREE.Mesh(legGeo, dark);
+    leg.position.set(lx, 0.1, lz);
+    group.add(leg);
+    legs.push(leg);
+  }
+
+  group.traverse((o) => {
+    if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+  });
+  group.scale.setScalar(0.9);
+  group.position.set(FOX_SLEEP_SPOT.x, baseHeight(FOX_SLEEP_SPOT.x, FOX_SLEEP_SPOT.z) + 0.02, FOX_SLEEP_SPOT.z);
+  scene.add(group);
+
+  fox.group = group;
+  fox.body = body;
+  fox.head = head;
+  fox.tail = tail;
+  fox.legs = legs;
+}
+addFox();
+
+function foxUpdate(dt, t, elapsed) {
+  const g = fox.group;
+  if (!g) return;
+  const p = player.position;
+  const px = p.x, pz = p.z;
+  const dist = Math.hypot(px - g.position.x, pz - g.position.z);
+  const pondDist = Math.hypot(g.position.x - POND.x, g.position.z - POND.z);
+  const speed = fox.velocity.length();
+
+  // pose latches (recomputed each tick, so nothing accumulates)
+  const sit = fox.state === "idle";
+  fox.body.rotation.x = Math.PI / 2 + (sit || fox.state === "sleep" ? 0.3 : 0);
+  fox.head.position.y = 0.3;
+  fox.head.rotation.z = sit ? 0.35 : 0;
+
+  let groundY = baseHeight(g.position.x, g.position.z) + 0.02;
+
+  if (fox.pouncePhase === 1) {
+    // crouch
+    fox.pounceT -= dt;
+    g.scale.set(0.9, 0.74, 0.9);
+    if (fox.pounceT <= 0) {
+      fox.pouncePhase = 2;
+      fox.pounceT = 0.35;
+      g.scale.set(0.9, 0.9, 0.9);
+    }
+  } else if (fox.pouncePhase === 2) {
+    // hop toward the spot with a small arc
+    fox.pounceT -= dt;
+    const h = clamp(1 - fox.pounceT / 0.35, 0, 1);
+    g.position.x += fox.velocity.x * dt;
+    g.position.z += fox.velocity.z * dt;
+    groundY += 0.45 * 4 * h * (1 - h);
+    if (fox.pounceT <= 0) {
+      fox.pouncePhase = 3;
+      fox.pounceT = 1.2;
+    }
+  } else if (fox.pouncePhase === 3) {
+    // tail wag celebration, then back to normal
+    fox.pounceT -= dt;
+    fox.tail.rotation.z = Math.sin(t * 14) * 0.5;
+    if (fox.pounceT <= 0) {
+      fox.pouncePhase = 0;
+      fox.tail.rotation.z = 0;
+      fox.pounceTimer = 20 + Math.random() * 20;
+    }
+  } else if (fox.state === "sleep") {
+    if (dist < 3) {
+      fox.state = "follow";
+    } else {
+      // curl up: breath on the body, tucked pose
+      const rested = Math.hypot(g.position.x - FOX_SLEEP_SPOT.x, g.position.z - FOX_SLEEP_SPOT.z) < 0.35;
+      if (!rested) {
+        const dx = FOX_SLEEP_SPOT.x - g.position.x;
+        const dz = FOX_SLEEP_SPOT.z - g.position.z;
+        const d = Math.hypot(dx, dz) || 1;
+        fox.velocity.set((dx / d) * 1.4, 0, (dz / d) * 1.4);
+        g.position.x += fox.velocity.x * dt;
+        g.position.z += fox.velocity.z * dt;
+      } else {
+        fox.velocity.multiplyScalar(1 - Math.min(1, 5 * dt));
+        g.position.y = groundY - 0.04;
+        g.scale.setScalar(0.9 * 0.94);
+        fox.body.scale.y = 0.99 + Math.sin(t * 1.1) * 0.012;
+        fox.legs.forEach((leg) => { leg.scale.setScalar(0.55); });
+      }
+    }
+  } else if (sit) {
+    // sitting by the paused player: sniff bob
+    fox.velocity.multiplyScalar(1 - Math.min(1, 5 * dt));
+    fox.head.position.y = 0.3 + Math.sin(t * 3) * 0.04;
+    if (idleTime < 4 || dist > 1.4) fox.state = "follow";
+  } else {
+    // follow the player
+    if (dist > 1.4) {
+      const steer = new THREE.Vector3(px - g.position.x, 0, pz - g.position.z).normalize().multiplyScalar(2.2);
+      fox.velocity.lerp(steer, 1 - Math.exp(-7 * dt));
+    } else {
+      fox.velocity.multiplyScalar(1 - Math.min(1, 4 * dt));
+    }
+    if (idleTime > 4 && dist < 1.4 && speed < 0.3) fox.state = "idle";
+
+    // pounce: only on grassy ground, away from the pond, in daylight
+    if (!reduceMotion && qualityLevel < 3 && worldDaylight > 0.15 && pondDist > POND.r + 1.5) {
+      fox.pounceTimer -= dt;
+      if (fox.pounceTimer <= 0 && fbm(g.position.x * 0.12 + 31.7, g.position.z * 0.12 + 12.3, 3) > 0.5) {
+        const pa = Math.random() * Math.PI * 2;
+        const pr = 0.8 + Math.random() * 1.2;
+        fox.pounceSpot.set(g.position.x + Math.cos(pa) * pr, 0, g.position.z + Math.sin(pa) * pr);
+        const spotDist = Math.hypot(fox.pounceSpot.x - POND.x, fox.pounceSpot.z - POND.z);
+        if (spotDist > POND.r + 1.2 && walkable(fox.pounceSpot.x, fox.pounceSpot.z)) {
+          fox.pouncePhase = 1;
+          fox.pounceT = 0.6;
+          const hopDir = new THREE.Vector3(fox.pounceSpot.x - g.position.x, 0, fox.pounceSpot.z - g.position.z).normalize();
+          fox.velocity.copy(hopDir.multiplyScalar(2.6));
+        } else {
+          fox.pounceTimer = 5; // bad spot, try again soon
+        }
+      }
+    }
+  }
+
+  if (fox.pouncePhase === 0) {
+    // day/night state transitions
+    if (fox.state !== "idle" && worldDaylight < 0.05 && dist >= 3) fox.state = "sleep";
+    if (fox.state === "sleep" && (dist < 3 || worldDaylight >= 0.05)) fox.state = "follow";
+  }
+
+  // movement stays on solid ground
+  if (fox.pouncePhase === 0 && fox.state !== "sleep") {
+    const step = fox.velocity.clone().multiplyScalar(dt);
+    let nx = g.position.x + step.x;
+    let nz = g.position.z + step.z;
+    if (!walkable(nx, nz)) {
+      if (walkable(nx, g.position.z)) nz = g.position.z;
+      else if (walkable(g.position.x, nz)) nx = g.position.x;
+      else { nx = g.position.x; nz = g.position.z; fox.velocity.multiplyScalar(0.2); }
+    }
+    g.position.x = nx;
+    g.position.z = nz;
+    groundY = baseHeight(nx, nz) + 0.02;
+    g.position.y = groundY;
+  } else if (fox.state === "sleep") {
+    if (!walkable(g.position.x, g.position.z)) g.position.z = g.position.z; // sleep spot is always walkable
+    g.position.x = clamp(g.position.x, -ISLAND_R, ISLAND_R);
+    g.position.z = clamp(g.position.z, -ISLAND_R, ISLAND_R);
+    g.position.y = baseHeight(g.position.x, g.position.z) + (fox.body.scale.y < 1.05 ? -0.04 : 0.02);
+  }
+
+  // face where we're going (or the player when sitting)
+  if (fox.pouncePhase !== 1 && speed > 0.05) {
+    g.rotation.y = angleLerp(g.rotation.y, Math.atan2(fox.velocity.x, fox.velocity.z), 1 - Math.exp(-10 * dt));
+  } else if (sit) {
+    g.rotation.y = angleLerp(g.rotation.y, Math.atan2(px - g.position.x, pz - g.position.z), 1 - Math.exp(-4 * dt));
+  }
+
+  // stride
+  fox.stridePhase += speed * dt * 5.2;
+  const stride = reduceMotion ? 0 : Math.sin(fox.stridePhase);
+  fox.legs.forEach((leg, i) => {
+    leg.scale.x = leg.scale.y = leg.scale.z = 1;
+    const sgn = i < 2 ? 1 : -1;
+    leg.position.x = (i % 2 === 0 ? -0.09 : 0.09);
+    leg.position.z = (i < 2 ? 0.18 : -0.18);
+    if (!sit && fox.state !== "sleep") leg.position.z += stride * 0.06 * sgn;
+  });
+}
+
 const sunDir = new THREE.Vector3();
 let worldDaylight = 1;
 
@@ -1901,6 +2121,7 @@ function frame() {
   updateCamera(dt, elapsed);
   updateAtmosphere(dt, elapsed);
   updateCritters(t, elapsed);
+  foxUpdate(dt, t, elapsed);
 
   if (grassMaterial.userData.shader) {
     grassMaterial.userData.shader.uniforms.uTime.value = t;
@@ -2028,6 +2249,8 @@ window.meadowlight = {
   updateCamera,
   spawnRipple,
   updateRipples,
+  fox,
+  foxUpdate,
   disposeScene,
   // test-only helpers (no effect on gameplay unless called)
   testKey: (dir, down) => (down ? keys.add(dir) : keys.delete(dir)),
