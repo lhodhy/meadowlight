@@ -28,6 +28,7 @@ const motionScale = reduceMotion ? 0.12 : 1;
 const canvas = document.querySelector("#scene");
 const captionEl = document.querySelector("#caption");
 const hintEl = document.querySelector("#hint");
+const qualityEl = document.querySelector("#quality");
 const loaderEl = document.querySelector("#loader");
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -732,6 +733,7 @@ function scatterGrass() {
 }
 
 const grass = scatterGrass();
+const tuftField = grass; // addressable for the quality watchdog
 
 // ---------------------------------------------------------------------------
 // wildflowers
@@ -1196,7 +1198,7 @@ pollen.frustumCulled = false;
 scene.add(pollen);
 
 function updateCritters(t, elapsed) {
-  const showButterflies = worldDaylight > 0.22;
+  const showButterflies = worldDaylight > 0.22 && qualityLevel < 3;
   for (const b of butterflies) {
     b.group.visible = showButterflies;
     if (!showButterflies) continue;
@@ -1636,6 +1638,42 @@ function updateCamera(dt, elapsed) {
 
 // `?time=140` fast-forwards the day cycle (seconds) — handy for previewing dusk/night
 const startTime = Number(new URLSearchParams(location.search).get("time")) || 0;
+// ---------------------------------------------------------------------------
+// quality watchdog — steps detailed features down on weak GPUs
+// ---------------------------------------------------------------------------
+
+let qualityLevel = 0;
+let lowFpsTime = 0; // consecutive sampled seconds under 40 fps
+let fpsSample = 0; // dt accumulator
+let fpsFrames = 0;
+
+const QUALITY_LEVELS = [
+  { tufts: 22000, pixelRatio: Math.min(devicePixelRatio || 1, 2), pollen: 240 },
+  { tufts: 14000, pixelRatio: Math.min(devicePixelRatio || 1, 1.5), pollen: 240 },
+  { tufts: 9000, pixelRatio: 1, pollen: 120 },
+  { tufts: 5000, pixelRatio: 1, pollen: 0 },
+];
+
+function applyQualityLevel(n) {
+  qualityLevel = Math.max(0, Math.min(3, n));
+  const lvl = QUALITY_LEVELS[qualityLevel];
+  tuftField.count = lvl.tufts;
+  renderer.setPixelRatio(lvl.pixelRatio);
+  composer.setPixelRatio(lvl.pixelRatio);
+  resize();
+  pollenGeo.setDrawRange(0, lvl.pollen);
+  qualityEl.classList.toggle("scaled", qualityLevel > 0);
+  console.info(`meadowlight: quality level ${qualityLevel}`);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    fpsSample = 0;
+    fpsFrames = 0;
+    lowFpsTime = 0;
+  }
+});
+
 const timer = new THREE.Timer();
 timer.connect(document);
 
@@ -1686,6 +1724,22 @@ function frame() {
   }
 
   composer.render(dt);
+
+  // quality watchdog
+  if (!document.hidden && elapsed > 2) {
+    fpsSample += dt;
+    fpsFrames++;
+    if (fpsSample >= 1) {
+      const fps = fpsFrames / fpsSample;
+      fpsSample = 0;
+      fpsFrames = 0;
+      lowFpsTime = fps < 40 ? lowFpsTime + 1 : 0;
+      if (lowFpsTime >= 3 && qualityLevel < 3) {
+        applyQualityLevel(qualityLevel + 1);
+        lowFpsTime = 0;
+      }
+    }
+  }
 
   if (firstFrame) {
     firstFrame = false;
@@ -1747,4 +1801,6 @@ window.meadowlight = {
   // test-only helpers (no effect on gameplay unless called)
   testKey: (dir, down) => (down ? keys.add(dir) : keys.delete(dir)),
   testWalkable: walkable,
+  applyQuality: applyQualityLevel,
+  qualityLevel: () => qualityLevel,
 };

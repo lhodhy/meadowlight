@@ -126,6 +126,19 @@
         #hint { font-size: 10.5px; gap: 9px; padding: 8px 12px; }
       }
 
+      #quality {
+        position: fixed;
+        left: 14px;
+        bottom: 14px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: transparent;
+        pointer-events: none;
+        transition: background 0.8s ease;
+      }
+      #quality.scaled { background: rgba(255, 185, 84, 0.8); }
+
       #loader {
         position: fixed;
         inset: 0;
@@ -179,6 +192,8 @@
       <span>drag to look</span>
       <span>scroll to zoom</span>
     </div>
+
+    <div id="quality" aria-hidden="true"></div>
 
     <div id="loader">growing grass<span class="dot"></span></div>
 
