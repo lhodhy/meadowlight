@@ -155,6 +155,7 @@ const skyUniforms = {
   uSunColor: { value: new THREE.Color(0xffd2a0) },
   uNight: { value: 0 },
   uGlow: { value: 0.55 },
+  uTime: { value: 0 },
 };
 
 const sky = new THREE.Mesh(
@@ -178,6 +179,7 @@ const sky = new THREE.Mesh(
       uniform vec3 uSunColor;
       uniform float uNight;
       uniform float uGlow;
+      uniform float uTime;
       varying vec3 vDir;
 
       float hash13(vec3 p) {
@@ -189,16 +191,46 @@ const sky = new THREE.Mesh(
       void main() {
         vec3 dir = normalize(vDir);
         // compress the gradient so the isometric view still sees blue above the horizon
-        float h = smoothstep(-0.08, 0.55, dir.y);
+        float h = smoothstep(-0.12, 0.42, dir.y);
         vec3 col = mix(uHorizon, uTop, h);
+
+        // soft painted cloud streaks riding the day palette
+        // (precision-safe layered sinusoids instead of cell hashing; slow drift via uTime)
+        // NOTE: the ortho camera always looks down at the island, so users only ever
+        // see the BELOW-horizon backdrop (dir.y ~ -0.1..-0.7 across orbit/zoom range;
+        // px per dir-unit ~1630 at orbit views). Bands are placed there and painted as
+        // cool-tinted streaks - additive white lift would clip invisibly on the bright
+        // cream horizon, a blue lift reads as distant haze/clouds.
+        float clouds = 0.0;
+        for (int i = 0; i < 3; i++) {
+          float yc = -0.10 - float(i) * 0.17;
+          float d = abs(dir.y - yc);
+          vec2 q = dir.xz * (42.0 + float(i) * 14.0);
+          q.x += uTime * 0.01;
+          float n = 0.5 + 0.25 * (sin(q.x * 2.3 + float(i) * 1.7) * sin(q.y * 3.1 - float(i) * 2.3)
+                  + 0.85 * sin((q.x + 0.6 * q.y) * 1.7 + float(i) * 4.1));
+          clouds = max(clouds, (1.0 - smoothstep(0.006, 0.018, d)) * smoothstep(0.40, 0.75, n));
+        }
+        vec3 bandCol = col * 0.88 + vec3(0.14, 0.16, 0.26) * (1.0 - 0.55 * uNight);
+        float bandA = clouds * (0.20 + 0.10 * (1.0 - uNight));
+        col = mix(col, bandCol, bandA);
 
         float sun = pow(max(dot(dir, normalize(uSunDir)), 0.0), 26.0);
         float halo = pow(max(dot(dir, normalize(uSunDir)), 0.0), 6.0);
         col += uSunColor * (sun + halo * 0.32) * uGlow;
 
         // stars live high in the sky and only come out at night
-        vec3 cell = floor(dir * 240.0);
-        float star = smoothstep(0.9968, 0.9994, hash13(cell));
+        // (2D cells over dir.xz; hash is jittered so integer cell coords don't
+        // collapse to a few values; point-in-cell discs instead of whole-cell squares)
+        vec2 sc = dir.xz * 1600.0;
+        vec2 cell = floor(sc);
+        vec3 jit = vec3(cell, 0.0) * 0.173 + vec3(0.11, 0.27, 0.53);
+        float h1 = hash13(jit);
+        float h2 = hash13(jit + vec3(0.37, 0.61, 0.19));
+        float h3 = hash13(jit + vec3(0.71, 0.13, 0.49));
+        vec2 starPos = vec2(h1, h2) * 0.5 - 0.25;
+        float starD = length(fract(sc) - 0.5 - starPos);
+        float star = (1.0 - smoothstep(0.08, 0.30, starD)) * step(0.93, h3);
         col += vec3(0.95, 0.97, 1.0) * star * uNight * smoothstep(0.02, 0.42, dir.y);
 
         gl_FragColor = vec4(col, 1.0);
@@ -1714,6 +1746,7 @@ function frame() {
     grassMaterial.userData.shader.uniforms.uTime.value = t;
     grassMaterial.userData.shader.uniforms.uWind.value = motionScale;
   }
+  skyUniforms.uTime.value = t;
 
   waterNormal.offset.x = t * 0.014;
   waterNormal.offset.y = t * 0.009;
