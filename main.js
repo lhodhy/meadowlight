@@ -593,6 +593,38 @@ water.position.set(POND.x, WATER_Y, POND.z);
 water.receiveShadow = true;
 scene.add(water);
 
+// fake sky reflection + sun glitter: inject sky palette colors into the water shader
+let waterUniformsRef = null;
+water.material.onBeforeCompile = (shader) => {
+  shader.uniforms.uSkyTop = { value: new THREE.Color() };
+  shader.uniforms.uSkyHorizon = { value: new THREE.Color() };
+  shader.uniforms.uSunColorW = { value: new THREE.Color() };
+  shader.uniforms.uNightW = { value: 0 };
+  shader.uniforms.worldDaylightW = { value: 1 };
+  shader.uniforms.uTimeW = { value: 0 };
+  waterUniformsRef = shader.uniforms;
+  water.material.userData.shader = shader;
+
+  shader.fragmentShader =
+    "uniform vec3 uSkyTop;\nuniform vec3 uSkyHorizon;\nuniform vec3 uSunColorW;\nuniform float uNightW;\nuniform float worldDaylightW;\nuniform float uTimeW;\nfloat hashW(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n" +
+    shader.fragmentShader;
+  shader.fragmentShader = shader.fragmentShader.replace(
+    "#include <color_fragment>",
+    /* glsl */ `
+    #include <color_fragment>
+    // grazing faces pick up the sky color, faking a reflection (no render targets)
+    vec3 wView = normalize(vViewPosition);
+    float fres = pow(1.0 - abs(dot(wView, normalize(vNormal))), 3.0);
+    vec3 skyMix = mix(uSkyHorizon, uSkyTop, 0.55) * (0.55 + 0.45 * worldDaylightW);
+    diffuseColor.rgb += skyMix * fres * 0.35;
+    // sparse twinkling glints (drifting hash field); sun-colored, gone at night
+    float sparkleN = hashW(vMapUv * 480.0 + vec2(uTimeW * 0.02, -uTimeW * 0.013));
+    diffuseColor.rgb += uSunColorW * pow(sparkleN, 45.0) * 1.6 * (1.0 - uNightW);
+    `,
+  );
+};
+water.material.customProgramCacheKey = () => "pond-sky";
+
 // lily pads
 const padGeo = new THREE.CircleGeometry(0.3, 12);
 const padMat = new THREE.MeshStandardMaterial({ color: 0x4f8a4a, roughness: 0.75 });
@@ -1482,6 +1514,15 @@ function updateAtmosphere(dt, elapsed) {
 
   water.material.color.lerpColors(dayPalette.waterNight, dayPalette.waterDay, ambMix);
   water.material.opacity = 0.94;
+
+  if (waterUniformsRef) {
+    waterUniformsRef.uSkyTop.value.copy(skyUniforms.uTop.value);
+    waterUniformsRef.uSkyHorizon.value.copy(skyUniforms.uHorizon.value);
+    waterUniformsRef.uSunColorW.value.copy(skyUniforms.uSunColor.value);
+    waterUniformsRef.uNightW.value = skyUniforms.uNight.value;
+    waterUniformsRef.worldDaylightW.value = worldDaylight;
+    waterUniformsRef.uTimeW.value = skyUniforms.uTime.value;
+  }
 
   const firefly = smoothstep(0.45, 0.05, daylight);
   fireflyMat.opacity = firefly * (reduceMotion ? 0.5 : 0.95);
