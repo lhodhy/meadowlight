@@ -1,9 +1,9 @@
 # Meadowlight 🌾
 
 A tiny isometric walking sim: a fully procedural grassland island with a pond,
-a winding path, standing stones, butterflies, fireflies, and a 6-minute day
-night cycle. Everything is generated in code — no models, no textures on disk,
-no build step.
+a winding path, standing stones, butterflies, fireflies, a fox that follows you
+around (and curls up to sleep at dusk), and a 6-minute day night cycle.
+Everything is generated in code — no models, no textures on disk, no build step.
 
 ## Requirements
 
@@ -39,11 +39,22 @@ design (see note above).
 
 ## Controls
 
+**Keyboard / mouse**
+
 | Input        | Action                          |
 | ------------ | ------------------------------- |
 | `WASD` / arrows | Walk (camera-relative)       |
+| Mouse drag   | Orbit the camera                |
 | Mouse wheel  | Zoom                            |
 | Tab hidden / window blur | Animation pauses    |
+
+**Touch**
+
+| Gesture       | Action                                        |
+| ------------- | --------------------------------------------- |
+| Left-half screen | Thumb joystick (walks camera-relative)     |
+| Two fingers   | Pinch to zoom (same range as the wheel)      |
+| Right-half single touch | Reserved (does nothing for now)     |
 
 Walk up to glowing spots to read the vignette captions. The pond is solid;
 island rim is the boundary. No jump button — it's a walk in the meadow.
@@ -68,9 +79,13 @@ The full day loop is 6 minutes, starting mid-afternoon.
 ## System considerations
 
 - **Reduced motion**: if the OS reports `prefers-reduced-motion`, camera
-  easing, grass sway and critter motion are dialed back automatically.
+  easing, grass sway, sky drift, water twinkle and critter motion are dialed
+  back; the grass parts less, ripples and fish plops are skipped, and the fox
+  never pounces.
 - **Performance**: the scene is draw-call friendly (instanced tufts, shrubs,
-  rocks, flowers). On integrated GPUs, reducing browser zoom keeps it smooth.
+  rocks, flowers). A watchdog samples FPS after a short warmup and steps
+  grass density and pixel ratio down (levels 0–3, amber dot bottom-left when
+  scaled) on struggling GPUs.
 - **Hidden tabs**: browsers suspend `requestAnimationFrame` for backgrounded
   tabs, so the page idles at zero cost when the tab isn't visible.
 
