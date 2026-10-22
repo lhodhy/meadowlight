@@ -733,9 +733,11 @@ const grassMaterial = new THREE.MeshStandardMaterial({
 grassMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
   shader.uniforms.uWind = { value: 1 };
+  shader.uniforms.uPlayerPos = { value: new THREE.Vector3() };
+  shader.uniforms.uPlayerActive = { value: 0 };
   grassMaterial.userData.shader = shader;
 
-  shader.vertexShader = "uniform float uTime;\nuniform float uWind;\n" + shader.vertexShader;
+  shader.vertexShader = "uniform float uTime;\nuniform float uWind;\nuniform vec3 uPlayerPos;\nuniform float uPlayerActive;\n" + shader.vertexShader;
   shader.vertexShader = shader.vertexShader.replace(
     "#include <begin_vertex>",
     /* glsl */ `
@@ -746,10 +748,45 @@ grassMaterial.onBeforeCompile = (shader) => {
     float sway = sin(uTime * 1.7 + phase) * 0.09 + sin(uTime * 3.3 + phase * 1.9) * 0.028;
     transformed.x += sway * bend * uWind;
     transformed.z += sway * 0.55 * bend * uWind;
+    // the player wades through: blades near the feet bend away from the body
+    vec2 away = iPos.xz - uPlayerPos.xz;
+    float pdist = length(away);
+    float push = (1.0 - smoothstep(0.0, 1.1, pdist)) * uPlayerActive;
+    if (push > 0.001) {
+      vec2 dir = away / max(pdist, 0.001);
+      transformed.x += dir.x * push * 0.35 * bend;
+      transformed.z += dir.y * push * 0.35 * bend;
+    }
     `,
   );
 };
 grassMaterial.customProgramCacheKey = () => "grass-wind";
+
+// wildflowers share the player-brush injection (blades of flowers pushed lightly)
+const flowerMaterial = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0 });
+flowerMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uPlayerPos = { value: new THREE.Vector3() };
+  shader.uniforms.uPlayerActive = { value: 0 };
+  flowerMaterial.userData.shader = shader;
+
+  shader.vertexShader = "uniform vec3 uPlayerPos;\nuniform float uPlayerActive;\n" + shader.vertexShader;
+  shader.vertexShader = shader.vertexShader.replace(
+    "#include <begin_vertex>",
+    /* glsl */ `
+    #include <begin_vertex>
+    vec3 iPos = instanceMatrix[3].xyz;
+    vec2 away = iPos.xz - uPlayerPos.xz;
+    float pdist = length(away);
+    float push = (1.0 - smoothstep(0.0, 0.7, pdist)) * uPlayerActive;
+    if (push > 0.001) {
+      vec2 dir = away / max(pdist, 0.001);
+      transformed.x += dir.x * push * 0.22;
+      transformed.z += dir.y * push * 0.22;
+    }
+    `,
+  );
+};
+flowerMaterial.customProgramCacheKey = () => "flowers-brush";
 
 function scatterGrass() {
   const count = 22000;
@@ -814,8 +851,7 @@ function scatterFlowers() {
   const palette = [0xffe9a8, 0xffcf5e, 0xf6a9c2, 0xc7aef2, 0xfff6e0, 0xff9f7d, 0xffe08a];
   const count = 800;
   const geo = new THREE.IcosahedronGeometry(0.06, 0);
-  const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0 });
-  const mesh = new THREE.InstancedMesh(geo, mat, count);
+  const mesh = new THREE.InstancedMesh(geo, flowerMaterial, count);
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
 
@@ -1470,6 +1506,68 @@ const dayPalette = {
   waterNight: new THREE.Color(0x2a4a52),
 };
 
+// ---------------------------------------------------------------------------
+// pond life: ripple rings + fish plops
+// ---------------------------------------------------------------------------
+
+const ripples = []; // pool of 8: { mesh, age, life, strength }
+const rippleGeo = new THREE.RingGeometry(0.9, 1.0, 40);
+for (let i = 0; i < 8; i++) {
+  const mesh = new THREE.Mesh(
+    rippleGeo,
+    new THREE.MeshBasicMaterial({ color: 0xdff4ef, transparent: true, opacity: 0, depthWrite: false }),
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.y = WATER_Y + 0.02;
+  mesh.renderOrder = 3;
+  mesh.visible = false;
+  scene.add(mesh);
+  ripples.push({ mesh, age: 99, life: 1.4, strength: 0 });
+}
+
+function spawnRipple(x, z, strength) {
+  if (reduceMotion) return; // it is motion; the reduced preset sits it out
+  let slot = ripples.find((r) => r.age >= r.life);
+  if (!slot) {
+    slot = ripples[0];
+    for (const r of ripples) if (r.age > slot.age) slot = r; // recycle oldest
+  }
+  slot.age = 0;
+  slot.strength = strength;
+  slot.mesh.position.x = x;
+  slot.mesh.position.z = z;
+  slot.mesh.visible = true;
+}
+
+function updateRipples(dt) {
+  for (const r of ripples) {
+    if (r.age >= r.life) {
+      r.mesh.visible = false;
+      continue;
+    }
+    r.age += dt;
+    const t = clamp(r.age / r.life, 0, 1);
+    const s = 0.3 + 0.9 * r.age;
+    r.mesh.scale.setScalar(s);
+    r.mesh.material.opacity = r.strength * (1 - t) * 0.8;
+    if (r.age >= r.life) r.mesh.visible = false;
+  }
+}
+
+// a shared dark ellipse for the fish flash under the surface
+const fishFlash = new THREE.Mesh(
+  new THREE.CircleGeometry(0.2, 16),
+  new THREE.MeshBasicMaterial({ color: 0x35505a, depthWrite: false }),
+);
+fishFlash.rotation.x = -Math.PI / 2;
+fishFlash.scale.set(1.4, 0.6, 1);
+fishFlash.position.y = WATER_Y + 0.03;
+fishFlash.renderOrder = 3;
+fishFlash.visible = false;
+scene.add(fishFlash);
+let fishFlashT = 0;
+let fishTimer = 4;
+
 const sunDir = new THREE.Vector3();
 let worldDaylight = 1;
 
@@ -1580,6 +1678,9 @@ function walkable(x, z) {
   return Math.hypot(x - POND.x, z - POND.z) > POND.r * 1.02;
 }
 
+let playerActive = 0; // eased 0..1: drives the player-brush shaders
+let shoreRippleCd = 0;
+
 function updatePlayer(dt, elapsed) {
   const xin = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
   const zin = (keys.has("up") ? 1 : 0) - (keys.has("down") ? 1 : 0);
@@ -1636,6 +1737,24 @@ function updatePlayer(dt, elapsed) {
     yaw = angleLerp(yaw, Math.atan2(velocity.x, velocity.z), 1 - Math.exp(-12 * dt));
   }
   player.rotation.y = yaw;
+
+  // eased flag for the parting-grass / brushed-flower shaders
+  playerActive = lerp(playerActive, speed > 0.05 ? 1 : 0, 1 - Math.exp(-6 * dt));
+
+  // wading near the shore leaves rings on the water
+  const pondDist = Math.hypot(player.position.x - POND.x, player.position.z - POND.z);
+  if (speed > 0.2 && pondDist < POND.r * 1.7) {
+    shoreRippleCd -= dt;
+    if (shoreRippleCd <= 0) {
+      const dx = player.position.x - POND.x;
+      const dz = player.position.z - POND.z;
+      const d = Math.hypot(dx, dz) || 1;
+      spawnRipple(POND.x + (dx / d) * POND.r * 1.04, POND.z + (dz / d) * POND.r * 1.04, 0.55);
+      shoreRippleCd = 0.8;
+    }
+  } else {
+    shoreRippleCd = 0;
+  }
 
   // stride
   walkPhase += speed * dt * 5.2;
@@ -1789,6 +1908,42 @@ function frame() {
   }
   skyUniforms.uTime.value = t;
 
+  // player of the parting-grass / brushed-flower shaders; suppressed under reduced motion
+  const brushActive = reduceMotion ? 0 : playerActive;
+  const grassShader = grassMaterial.userData.shader;
+  if (grassShader) {
+    grassShader.uniforms.uPlayerPos.value.copy(player.position);
+    grassShader.uniforms.uPlayerActive.value = brushActive;
+  }
+  const flowerShader = flowerMaterial.userData.shader;
+  if (flowerShader) {
+    flowerShader.uniforms.uPlayerPos.value.copy(player.position);
+    flowerShader.uniforms.uPlayerActive.value = brushActive;
+  }
+
+  updateRipples(dt);
+
+  // fish plops: a flash under the surface, a ring, and silence again
+  if (!reduceMotion && worldDaylight > 0.3 && qualityLevel < 3) {
+    fishTimer -= dt;
+    if (fishTimer <= 0) {
+      const a = Math.random() * Math.PI * 2;
+      const rr = Math.random() * POND.r * 0.75;
+      const fx = POND.x + Math.cos(a) * rr;
+      const fz = POND.z + Math.sin(a) * rr;
+      fishFlash.position.x = fx;
+      fishFlash.position.z = fz;
+      fishFlash.visible = true;
+      fishFlashT = 0.45;
+      spawnRipple(fx, fz, 0.9);
+      fishTimer = 6 + Math.random() * 8;
+    }
+  }
+  if (fishFlash.visible) {
+    fishFlashT -= dt;
+    if (fishFlashT <= 0) fishFlash.visible = false;
+  }
+
   waterNormal.offset.x = t * 0.014;
   waterNormal.offset.y = t * 0.009;
 
@@ -1871,6 +2026,8 @@ window.meadowlight = {
   updateAtmosphere,
   updatePlayer,
   updateCamera,
+  spawnRipple,
+  updateRipples,
   disposeScene,
   // test-only helpers (no effect on gameplay unless called)
   testKey: (dir, down) => (down ? keys.add(dir) : keys.delete(dir)),
