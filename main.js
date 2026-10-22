@@ -26,8 +26,14 @@ const reduceMotion =
 const motionScale = reduceMotion ? 0.12 : 1;
 
 const canvas = document.querySelector("#scene");
+canvas.style.touchAction = "none"; // also set in CSS; explicit for robustness
 const captionEl = document.querySelector("#caption");
 const hintEl = document.querySelector("#hint");
+
+// touch devices get their own hint copy (desktop copy keeps its kbd caps)
+if (navigator.maxTouchPoints > 0) {
+  hintEl.textContent = "left thumb walks · pinch zooms";
+}
 const qualityEl = document.querySelector("#quality");
 const loaderEl = document.querySelector("#loader");
 
@@ -1449,7 +1455,116 @@ let dragging = false;
 let lastPointer = { x: 0, y: 0 };
 let interacting = 0;
 
+// --- touch: left-thumb joystick + pinch zoom (mouse orbit path untouched) ---
+const activePointers = new Map(); // pointerId -> { x, y, type }
+const touchInput = { xin: 0, zin: 0, active: false };
+let joyId = null;
+let joyOrigin = { x: 0, y: 0 };
+let pinching = false;
+let pinchPrevDist = 0;
+const JOY_RADIUS = 48;
+
+const joyEl = document.querySelector("#joy");
+const joyNubEl = document.querySelector("#joyNub");
+
+const touchEntries = () => {
+  const out = [];
+  for (const [id, p] of activePointers) if (p.type !== "mouse") out.push([id, p]);
+  return out;
+};
+
+const pinchDist = () => {
+  const list = touchEntries();
+  return list.length < 2 ? 0 : Math.hypot(list[0][1].x - list[1][1].x, list[0][1].y - list[1][1].y);
+};
+
+function startJoystick(id, x, y) {
+  joyId = id;
+  joyOrigin = { x, y };
+  touchInput.active = true;
+  touchInput.xin = 0;
+  touchInput.zin = 0;
+  joyEl.style.left = `${x}px`;
+  joyEl.style.top = `${y}px`;
+  joyNubEl.style.transform = "translate(0px, 0px)";
+  joyEl.classList.add("visible");
+}
+
+function stopJoystick() {
+  joyId = null;
+  touchInput.active = false;
+  touchInput.xin = 0;
+  touchInput.zin = 0;
+  joyEl.classList.remove("visible");
+}
+
+function onTouchDown(e) {
+  const t = touchEntries();
+  if (t.length >= 2) {
+    // second finger: pinch wins, joystick is ignored while pinching
+    stopJoystick();
+    pinching = true;
+    pinchPrevDist = pinchDist();
+  } else if (e.clientX < window.innerWidth / 2) {
+    startJoystick(e.pointerId, e.clientX, e.clientY);
+  }
+  interacting = 1;
+  hintEl.classList.add("hidden");
+}
+
+function onTouchMove(e) {
+  const t = touchEntries();
+  if (t.length >= 2) {
+    pinching = true;
+    const d = pinchDist();
+    if (pinchPrevDist > 0) {
+      zoom = clamp(zoom * (1 + (pinchPrevDist - d) * 0.004), 0.65, 2.1);
+      applyCameraFrustum();
+    }
+    pinchPrevDist = d;
+  } else if (touchInput.active && e.pointerId === joyId) {
+    let vx = (e.clientX - joyOrigin.x) / JOY_RADIUS;
+    let vy = (e.clientY - joyOrigin.y) / JOY_RADIUS;
+    const len = Math.hypot(vx, vy);
+    if (len > 1) {
+      vx /= len;
+      vy /= len;
+    }
+    touchInput.xin = vx;
+    touchInput.zin = -vy;
+    joyNubEl.style.transform = `translate(${vx * 28}px, ${vy * 28}px)`;
+  }
+}
+
+function onTouchEnd(e) {
+  activePointers.delete(e.pointerId);
+  const t = touchEntries();
+  if (t.length >= 2) {
+    // the finger set changed underneath the pinch: re-seed its distance
+    pinchPrevDist = pinchDist();
+    return;
+  }
+  if (t.length === 1) {
+    // back to one touch: re-seed the joystick (fresh origin) or stand down
+    pinching = false;
+    pinchPrevDist = 0;
+    const [id, p] = t[0];
+    if (p.x < window.innerWidth / 2) startJoystick(id, p.x, p.y);
+    else stopJoystick();
+    return;
+  }
+  pinching = false;
+  pinchPrevDist = 0;
+  stopJoystick();
+}
+
 canvas.addEventListener("pointerdown", (e) => {
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+  if (e.pointerType !== "mouse") {
+    onTouchDown(e);
+    if (e.isTrusted) canvas.setPointerCapture(e.pointerId);
+    return;
+  }
   dragging = true;
   interacting = 1;
   lastPointer = { x: e.clientX, y: e.clientY };
@@ -1457,6 +1572,15 @@ canvas.addEventListener("pointerdown", (e) => {
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove", (e) => {
+  const entry = activePointers.get(e.pointerId);
+  if (entry) {
+    entry.x = e.clientX;
+    entry.y = e.clientY;
+  }
+  if (e.pointerType !== "mouse") {
+    onTouchMove(e);
+    return;
+  }
   if (!dragging) return;
   const dx = e.clientX - lastPointer.x;
   const dy = e.clientY - lastPointer.y;
@@ -1467,8 +1591,12 @@ canvas.addEventListener("pointermove", (e) => {
 const endDrag = (e) => {
   dragging = false;
   canvas.classList.remove("dragging");
-  if (e && e.pointerId !== undefined && canvas.hasPointerCapture(e.pointerId)) {
-    canvas.releasePointerCapture(e.pointerId);
+  if (e && e.pointerId !== undefined) {
+    activePointers.delete(e.pointerId);
+    if (e.pointerType !== "mouse") onTouchEnd(e);
+    if (canvas.hasPointerCapture(e.pointerId)) {
+      canvas.releasePointerCapture(e.pointerId);
+    }
   }
 };
 canvas.addEventListener("pointerup", endDrag);
@@ -1902,8 +2030,16 @@ let playerActive = 0; // eased 0..1: drives the player-brush shaders
 let shoreRippleCd = 0;
 
 function updatePlayer(dt, elapsed) {
-  const xin = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
-  const zin = (keys.has("up") ? 1 : 0) - (keys.has("down") ? 1 : 0);
+  const xin = clamp(
+    (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0) + touchInput.xin,
+    -1,
+    1,
+  );
+  const zin = clamp(
+    (keys.has("up") ? 1 : 0) - (keys.has("down") ? 1 : 0) + touchInput.zin,
+    -1,
+    1,
+  );
   const moving = xin !== 0 || zin !== 0;
 
   if (moving) {
@@ -2251,10 +2387,13 @@ window.meadowlight = {
   updateRipples,
   fox,
   foxUpdate,
+  touchInput,
   disposeScene,
   // test-only helpers (no effect on gameplay unless called)
   testKey: (dir, down) => (down ? keys.add(dir) : keys.delete(dir)),
   testWalkable: walkable,
+  azimuth: () => azimuth,
+  polar: () => polar,
   applyQuality: applyQualityLevel,
   qualityLevel: () => qualityLevel,
 };

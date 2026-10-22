@@ -139,6 +139,32 @@
       }
       #quality.scaled { background: rgba(255, 185, 84, 0.8); }
 
+      /* touch joystick (shown while a left-thumb touch is live) */
+      #joy {
+        position: fixed;
+        width: 96px;
+        height: 96px;
+        margin: -48px 0 0 -48px;
+        border-radius: 50%;
+        border: 1px solid rgba(246, 241, 228, 0.38);
+        background: rgba(18, 24, 28, 0.28);
+        backdrop-filter: blur(4px);
+        display: none;
+        pointer-events: none;
+      }
+      #joy.visible { display: block; }
+      #joyNub {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 40px;
+        height: 40px;
+        margin: -20px 0 0 -20px;
+        border-radius: 50%;
+        background: rgba(246, 241, 228, 0.75);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+      }
+
       #loader {
         position: fixed;
         inset: 0;
@@ -194,6 +220,8 @@
     </div>
 
     <div id="quality" aria-hidden="true"></div>
+
+    <div id="joy" aria-hidden="true"><div id="joyNub"></div></div>
 
     <div id="loader">growing grass<span class="dot"></span></div>
 
